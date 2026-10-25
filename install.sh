@@ -133,21 +133,20 @@ check_prereqs() {
 
 ghcr_login() {
     say "Signing in to ghcr.io (so Docker can pull private images)"
-    if docker info 2>/dev/null | grep -q "ghcr.io"; then
-        ok "Already signed in. Re-logging in anyway to make sure the token is current."
-    fi
     local tok
     if [ -n "${GHCR_TOKEN:-}" ]; then
         tok="$GHCR_TOKEN"
-        echo "    (using GHCR_TOKEN from the environment)"
-    else
+        echo "    (using GHCR_TOKEN from $INSTALL_DIR/.env or the environment)"
+    elif [ -t 0 ]; then
         read -r -s -p "    Paste the pull token you were emailed (github_pat_...): " tok
         echo
+    else
+        fail "GHCR_TOKEN is not set and this script is being piped (stdin is not a terminal, so I can't prompt). Create $INSTALL_DIR/.env with GHCR_TOKEN=... and re-run, or export GHCR_TOKEN before the curl line. See https://github.com/limanalhassan/devops-labs-config#quick-install"
     fi
-    [ -n "$tok" ] || fail "Token is empty. Re-run and paste the token when prompted."
+    [ -n "$tok" ] || fail "Token is empty. Re-run and paste the token when prompted, or add it to $INSTALL_DIR/.env."
     echo "$tok" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null \
         || fail "Login failed. The token may be wrong, expired, or missing read:packages. Email @limanalhassan."
-    ok "Signed in to ghcr.io"
+    ok "Signed in to ghcr.io as $GHCR_USER"
 }
 
 fetch_files() {
@@ -168,20 +167,28 @@ write_env() {
     local key port port_input
     if [ -n "${DEVOPS_LABS_LICENSE_KEY:-}" ]; then
         key="$DEVOPS_LABS_LICENSE_KEY"
-    else
+    elif [ -t 0 ]; then
         read -r -p "    License key you were emailed (eyJ...): " key
+    else
+        fail "DEVOPS_LABS_LICENSE_KEY is not set and this script is being piped (can't prompt). Add it to $INSTALL_DIR/.env and re-run."
     fi
     port="${DEVOPS_LABS_PORT:-$DEFAULT_PORT}"
-    while :; do
-        read -r -p "    Port on this machine for the UI [$port]: " port_input
-        port="${port_input:-$port}"
+    if [ -t 0 ]; then
+        while :; do
+            read -r -p "    Port on this machine for the UI [$port]: " port_input
+            port="${port_input:-$port}"
+            if port_in_use "$port"; then
+                warn "Port $port is already in use on this machine. Pick another."
+                port="$DEFAULT_PORT"
+                continue
+            fi
+            break
+        done
+    else
         if port_in_use "$port"; then
-            warn "Port $port is already in use on this machine. Pick another."
-            port="$DEFAULT_PORT"
-            continue
+            fail "Port $port is already in use. Set DEVOPS_LABS_PORT=<free port> in $INSTALL_DIR/.env and re-run."
         fi
-        break
-    done
+    fi
     cat > "$env_file" <<EOF
 DEVOPS_LABS_LICENSE_KEY=$key
 DEVOPS_LABS_PORT=$port
