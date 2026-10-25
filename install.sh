@@ -1,36 +1,134 @@
 #!/usr/bin/env bash
 # DevOps Labs installer. One-shot, idempotent, safe to re-run.
+# Works on macOS, Linux, and Windows via Git Bash or WSL2.
 #
-# What it does:
-#   1. Checks you have Docker and Docker Compose v2.
-#   2. Asks for the GitHub pull token you were emailed, logs into ghcr.io.
+# Walkthrough:
+#   1. Checks prerequisites: Docker, Docker Compose v2, curl, port, disk, RAM.
+#   2. Asks for the GitHub pull token and logs into ghcr.io.
 #   3. Downloads compose.yaml and .env.example into ~/devops-labs/.
 #   4. Asks for your license key and port, writes .env.
-#   5. Pulls the images and starts the stack.
-#   6. Prints the dashboard URL.
+#   5. Pulls images and starts the stack.
+#   6. Confirms /api/license shows kind=licensed and prints the URL.
 #
-# Re-run any time to re-prompt for anything you want to change.
+# Re-run any time to tweak anything. Values already set in .env survive.
 set -euo pipefail
 
 INSTALL_DIR="${DEVOPS_LABS_HOME:-$HOME/devops-labs}"
 RAW="https://raw.githubusercontent.com/limanalhassan/devops-labs-config/main"
 GHCR_USER="limanalhassan"
+MIN_DISK_GB=10
+MIN_RAM_GB=8
+DEFAULT_PORT=8090
 
 say()  { printf '\033[1;36m==> %s\033[0m\n' "$*"; }
-warn() { printf '\033[1;33m!!  %s\033[0m\n' "$*" >&2; }
+ok()   { printf '    \033[1;32m✓\033[0m %s\n' "$*"; }
+warn() { printf '    \033[1;33m!\033[0m %s\n' "$*" >&2; }
 fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*" >&2; exit 1; }
+
+detect_os() {
+    case "$(uname -s)" in
+        Darwin)         echo "macos" ;;
+        Linux)          echo "linux" ;;
+        MINGW*|CYGWIN*|MSYS*) echo "windows" ;;
+        *)              echo "unknown" ;;
+    esac
+}
+
+free_disk_gb() {
+    # Return free GB on the filesystem that holds $INSTALL_DIR's parent.
+    local target="$HOME"
+    df -k "$target" 2>/dev/null | awk 'NR==2 {printf "%d", $4/1024/1024}'
+}
+
+total_ram_gb() {
+    case "$(detect_os)" in
+        macos)   sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1024/1024/1024}' ;;
+        linux)   awk '/^MemTotal:/ {printf "%d", $2/1024/1024}' /proc/meminfo 2>/dev/null ;;
+        windows) echo "0" ;; # Can't portably detect under Git Bash; skip the check.
+        *)       echo "0" ;;
+    esac
+}
+
+port_in_use() {
+    local port="$1"
+    # Try several ways to detect "something listening on this port".
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -i ":$port" -sTCP:LISTEN >/dev/null 2>&1 && return 0
+    fi
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn "sport = :$port" 2>/dev/null | tail -n +2 | grep -q "" && return 0
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -an 2>/dev/null | grep -E "[.:]${port}[[:space:]].*LISTEN" >/dev/null && return 0
+    fi
+    return 1
+}
 
 check_prereqs() {
     say "Checking prerequisites"
-    command -v docker >/dev/null || fail "Docker is not installed. See https://docs.docker.com/get-docker/"
-    docker info >/dev/null 2>&1 || fail "Docker is installed but not running. Open Docker Desktop or run 'sudo systemctl start docker'."
-    docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required. Update Docker Desktop or install the compose plugin."
-    echo "    Docker $(docker --version | awk '{print $3}' | tr -d ,)"
-    echo "    Compose $(docker compose version --short)"
+
+    # OS
+    local os
+    os=$(detect_os)
+    ok "OS: $os"
+    [ "$os" = "unknown" ] && warn "Unknown OS. Carrying on, but ymmv."
+
+    # Docker
+    command -v docker >/dev/null || fail "Docker is not installed. Install Docker Desktop (Mac/Windows) or Docker Engine (Linux): https://docs.docker.com/get-docker/"
+    local docker_version
+    docker_version=$(docker version --format '{{.Client.Version}}' 2>/dev/null || echo "unknown")
+    ok "Docker CLI: $docker_version"
+    docker info >/dev/null 2>&1 || fail "Docker is installed but the daemon is not running. Start Docker Desktop or run 'sudo systemctl start docker'."
+    ok "Docker daemon: running"
+
+    # Compose v2
+    docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required. Update Docker Desktop (it's bundled), or install the compose plugin on Linux: https://docs.docker.com/compose/install/"
+    local compose_version
+    compose_version=$(docker compose version --short)
+    ok "Docker Compose: $compose_version"
+
+    # Script dependencies
+    command -v curl >/dev/null || fail "curl is required. Install it from your package manager."
+    ok "curl: present"
+
+    # Disk space
+    local disk_gb
+    disk_gb=$(free_disk_gb)
+    if [ -n "$disk_gb" ] && [ "$disk_gb" -gt 0 ]; then
+        if [ "$disk_gb" -lt "$MIN_DISK_GB" ]; then
+            warn "Only ${disk_gb}G free. Recommend at least ${MIN_DISK_GB}G. Install may still fit."
+        else
+            ok "Disk: ${disk_gb}G free (need ~${MIN_DISK_GB}G)"
+        fi
+    fi
+
+    # RAM
+    local ram_gb
+    ram_gb=$(total_ram_gb)
+    if [ -n "$ram_gb" ] && [ "$ram_gb" -gt 0 ]; then
+        if [ "$ram_gb" -lt "$MIN_RAM_GB" ]; then
+            warn "${ram_gb}G total RAM. Recommend at least ${MIN_RAM_GB}G. Labs may feel sluggish."
+        else
+            ok "RAM: ${ram_gb}G (need ~${MIN_RAM_GB}G)"
+        fi
+    fi
+
+    # Docker socket (needed because the API spawns lab containers through it)
+    local sock="/var/run/docker.sock"
+    if [ "$os" = "windows" ]; then
+        ok "Docker socket: Docker Desktop handles the socket on Windows."
+    elif [ -S "$sock" ] || [ -e "$sock" ]; then
+        ok "Docker socket: $sock present"
+    else
+        warn "No $sock. If labs can't start later, check your Docker Desktop setting 'Allow default Docker socket to be used'."
+    fi
 }
 
 ghcr_login() {
-    say "Signing in to ghcr.io"
+    say "Signing in to ghcr.io (so Docker can pull private images)"
+    if docker info 2>/dev/null | grep -q "ghcr.io"; then
+        ok "Already signed in. Re-logging in anyway to make sure the token is current."
+    fi
     local tok
     if [ -n "${GHCR_TOKEN:-}" ]; then
         tok="$GHCR_TOKEN"
@@ -40,7 +138,9 @@ ghcr_login() {
         echo
     fi
     [ -n "$tok" ] || fail "Token is empty. Re-run and paste the token when prompted."
-    echo "$tok" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+    echo "$tok" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null \
+        || fail "Login failed. The token may be wrong, expired, or missing read:packages. Email @limanalhassan."
+    ok "Signed in to ghcr.io"
 }
 
 fetch_files() {
@@ -48,48 +148,67 @@ fetch_files() {
     mkdir -p "$INSTALL_DIR"
     curl -fsSL "$RAW/compose.yaml"    -o "$INSTALL_DIR/compose.yaml"
     curl -fsSL "$RAW/.env.example"    -o "$INSTALL_DIR/.env.example"
+    ok "compose.yaml and .env.example in place"
 }
 
 write_env() {
     local env_file="$INSTALL_DIR/.env"
     say "Writing $env_file"
     if [ -f "$env_file" ] && grep -q "^DEVOPS_LABS_LICENSE_KEY=.." "$env_file"; then
-        echo "    .env already exists and has a license key; keeping it."
+        ok "An existing .env already has a license key; keeping it. Delete it to redo."
         return
     fi
-    local key port
+    local key port port_input
     if [ -n "${DEVOPS_LABS_LICENSE_KEY:-}" ]; then
         key="$DEVOPS_LABS_LICENSE_KEY"
     else
         read -r -p "    License key you were emailed (eyJ...): " key
     fi
-    port="${DEVOPS_LABS_PORT:-8090}"
-    read -r -p "    Port on this machine for the UI [$port]: " input
-    port="${input:-$port}"
+    port="${DEVOPS_LABS_PORT:-$DEFAULT_PORT}"
+    while :; do
+        read -r -p "    Port on this machine for the UI [$port]: " port_input
+        port="${port_input:-$port}"
+        if port_in_use "$port"; then
+            warn "Port $port is already in use on this machine. Pick another."
+            port="$DEFAULT_PORT"
+            continue
+        fi
+        break
+    done
     cat > "$env_file" <<EOF
 DEVOPS_LABS_LICENSE_KEY=$key
 DEVOPS_LABS_PORT=$port
 EOF
-    chmod 600 "$env_file"
+    chmod 600 "$env_file" 2>/dev/null || true  # chmod no-op on Windows FS; ignore.
+    ok ".env written (mode 600 where supported). Port $port."
 }
 
 start_stack() {
-    say "Pulling images (first run only, about a minute)"
-    (cd "$INSTALL_DIR" && docker compose pull)
+    say "Pulling images (about a minute the first time)"
+    (cd "$INSTALL_DIR" && docker compose pull) \
+        || fail "Pull failed. Usually a token problem; re-run the installer to re-login."
     say "Starting the stack"
     (cd "$INSTALL_DIR" && docker compose up -d)
     say "Confirming the license took effect"
-    sleep 2
     local port
     port=$(grep ^DEVOPS_LABS_PORT= "$INSTALL_DIR/.env" | cut -d= -f2)
-    local status
-    status=$(curl -fsS "http://localhost:$port/api/license" 2>/dev/null | grep -o '"kind":"[^"]*"' | cut -d'"' -f4)
-    case "$status" in
-        licensed)      echo "    License is active."              ;;
-        trial)         warn "No license key, trial started."       ;;
-        expired-grace) warn "License is in grace period."          ;;
-        expired-blocked) warn "License is blocked. Check /api/license." ;;
-        *)             warn "Could not read /api/license. Give it a few seconds and curl it yourself." ;;
+    # Wait up to 15s for the API to come up.
+    local tries=0 status=""
+    while [ $tries -lt 15 ]; do
+        status=$(curl -fsS "http://localhost:$port/api/license" 2>/dev/null | tr -d ' \n' || true)
+        [ -n "$status" ] && break
+        sleep 1
+        tries=$((tries + 1))
+    done
+    local kind
+    kind=$(printf '%s' "$status" | sed -n 's/.*"kind":"\([^"]*\)".*/\1/p')
+    case "$kind" in
+        licensed)        ok "License is active." ;;
+        trial)           warn "No valid license key; a 14-day trial has started." ;;
+        expired-grace)   warn "License is in the 7-day grace period." ;;
+        expired-blocked) warn "License is expired. API is blocked. Contact @limanalhassan." ;;
+        "")              warn "Could not read /api/license. Try: curl http://localhost:$port/api/license" ;;
+        *)               warn "Unexpected license state: $kind" ;;
     esac
     echo
     say "Done. Open http://localhost:$port in your browser."

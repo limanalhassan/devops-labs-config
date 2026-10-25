@@ -6,18 +6,27 @@ Hands-on DevOps labs you run on your own machine: Python, Linux, Git, Docker, Ku
 
 ## Quick install (one liner)
 
-Make sure you have **Docker Desktop** (Mac/Windows) or **Docker Engine** (Linux), 24.0 or newer, and about 20 GB of free disk. Then:
+Make sure you have **Docker Desktop** (Mac/Windows) or **Docker Engine** (Linux), 24.0 or newer, and about 10 GB of free disk + 8 GB of RAM. Then run the installer that matches your OS and shell:
+
+**macOS, Linux, or Windows via WSL2 / Git Bash:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/limanalhassan/devops-labs-config/main/install.sh | bash
 ```
 
-The script walks you through:
-1. Signing in to the private container registry (you'll paste the token you were emailed).
-2. Pulling the two Docker images.
-3. Dropping your license key into a `.env` file.
-4. Starting the stack.
-5. Opening http://localhost:8090 in your browser.
+**Windows PowerShell (native):**
+
+```powershell
+irm https://raw.githubusercontent.com/limanalhassan/devops-labs-config/main/install.ps1 | iex
+```
+
+Both scripts do the same thing:
+1. Check prerequisites (Docker running, Compose v2, free disk, free RAM, port available).
+2. Ask for the pull token (one long string from your welcome email) and log in to ghcr.io.
+3. Download `compose.yaml` and `.env.example` into `~/devops-labs/` (`%USERPROFILE%\devops-labs\` on Windows).
+4. Ask for your license key and port, write `.env`.
+5. Pull the Docker images and start the stack.
+6. Confirm `/api/license` reads `licensed` and tell you the browser URL.
 
 Total time: about 2 minutes, mostly waiting for the image pull.
 
