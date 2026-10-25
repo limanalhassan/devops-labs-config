@@ -66,6 +66,28 @@ function Get-TotalRamGb {
     [int]([math]::Floor($bytes / 1GB))
 }
 
+function Wait-ForDockerDaemon {
+    # Try to start Docker Desktop and poll `docker info` for up to 90s.
+    # Returns $true if the daemon comes up, $false otherwise.
+    $candidates = @(
+        "C:\Program Files\Docker\Docker\Docker Desktop.exe",
+        (Join-Path $env:LOCALAPPDATA "Docker\Docker Desktop.exe")
+    )
+    $dockerDesktop = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $dockerDesktop) {
+        Warn "Docker Desktop isn't installed. Install it from https://www.docker.com/products/docker-desktop/ and re-run."
+        return $false
+    }
+    Warn "Docker daemon isn't running. Launching Docker Desktop (first start can take ~60s)..."
+    Start-Process -FilePath $dockerDesktop -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+    for ($i = 0; $i -lt 45; $i++) {
+        docker info 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { return $true }
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
+
 function Check-Prereqs {
     Say "Checking prerequisites"
 
@@ -79,7 +101,9 @@ function Check-Prereqs {
 
     docker info 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Fail "Docker is installed but the daemon is not running. Open Docker Desktop and wait for it to say 'Engine running'."
+        if (-not (Wait-ForDockerDaemon)) {
+            Fail "Docker is installed but the daemon isn't up after 90s. Open Docker Desktop manually, wait for 'Engine running', and re-run."
+        }
     }
     Ok "Docker daemon: running"
 

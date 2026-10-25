@@ -105,6 +105,57 @@ port_in_use() {
     return 1
 }
 
+wait_for_docker_daemon() {
+    # Try to start Docker Desktop (Mac/Windows) and poll `docker info` for up
+    # to 90s. On Linux, docker is a system service we don't start for the user.
+    # Returns 0 if the daemon comes up, 1 otherwise.
+    local os="$1"
+    case "$os" in
+        macos)
+            if [ -d "/Applications/Docker.app" ]; then
+                warn "Docker daemon isn't running. Launching Docker Desktop (first start can take ~60s)..."
+                open -a Docker >/dev/null 2>&1 || true
+            else
+                warn "Docker Desktop isn't installed in /Applications. Start Docker and re-run, or install from https://www.docker.com/products/docker-desktop/"
+                return 1
+            fi
+            ;;
+        windows)
+            local dd=""
+            for cand in \
+                "/c/Program Files/Docker/Docker/Docker Desktop.exe" \
+                "$HOME/AppData/Local/Docker/Docker Desktop.exe"; do
+                [ -f "$cand" ] && dd="$cand" && break
+            done
+            if [ -n "$dd" ]; then
+                warn "Docker daemon isn't running. Launching Docker Desktop (first start can take ~60s)..."
+                "$dd" >/dev/null 2>&1 &
+                disown 2>/dev/null || true
+            else
+                warn "Docker Desktop isn't installed. Start it and re-run, or install from https://www.docker.com/products/docker-desktop/"
+                return 1
+            fi
+            ;;
+        linux)
+            warn "Docker daemon isn't running. Start it with: sudo systemctl start docker"
+            return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    # Poll up to ~90s.
+    local tries=0
+    while [ $tries -lt 45 ]; do
+        if docker info >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 2
+        tries=$((tries + 1))
+    done
+    return 1
+}
+
 check_prereqs() {
     say "Checking prerequisites"
 
@@ -119,7 +170,9 @@ check_prereqs() {
     local docker_version
     docker_version=$(docker version --format '{{.Client.Version}}' 2>/dev/null || echo "unknown")
     ok "Docker CLI: $docker_version"
-    docker info >/dev/null 2>&1 || fail "Docker is installed but the daemon is not running. Start Docker Desktop or run 'sudo systemctl start docker'."
+    if ! docker info >/dev/null 2>&1; then
+        wait_for_docker_daemon "$os" || fail "Docker is installed but the daemon isn't up after 90s. Start Docker Desktop (or 'sudo systemctl start docker' on Linux) and re-run."
+    fi
     ok "Docker daemon: running"
 
     # Compose v2
