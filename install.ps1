@@ -28,6 +28,10 @@ if (Test-Path $envFile) {
     Get-Content $envFile | ForEach-Object {
         if ($_ -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$') {
             $k = $Matches[1]; $v = $Matches[2]
+            # Strip one layer of surrounding single or double quotes.
+            if ($v -match "^'(.*)'$" -or $v -match '^"(.*)"$') {
+                $v = $Matches[1]
+            }
             if (-not [Environment]::GetEnvironmentVariable($k, 'Process')) {
                 [Environment]::SetEnvironmentVariable($k, $v, 'Process')
             }
