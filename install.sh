@@ -23,8 +23,42 @@ DEFAULT_PORT=8090
 # If a pre-filled .env exists in the install dir, pick up every value from it
 # so a low-friction customer can edit two blanks and run the installer unattended.
 # Shell env still wins (letting a scripted install override).
+#
+# We parse the file line by line instead of `source`-ing it, for two reasons:
+#   - a stray `$DEV_LICENSE` in the file would be expanded (and fatal under
+#     `set -u`), silently killing the installer.
+#   - unquoted shell metachars (`;`, backticks) in a value would execute.
+# Here the value is always read as a literal string.
+load_env_file() {
+    local file="$1" line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip blanks and comments.
+        case "$line" in
+            ''|'#'*) continue ;;
+        esac
+        # Must look like KEY=... with an upper-case/underscore key.
+        case "$line" in
+            [A-Z_]*=*) ;;
+            *) continue ;;
+        esac
+        key="${line%%=*}"
+        value="${line#*=}"
+        # Strip one layer of surrounding single or double quotes if present.
+        case "$value" in
+            \"*\") value="${value#\"}"; value="${value%\"}" ;;
+            \'*\') value="${value#\'}"; value="${value%\'}" ;;
+        esac
+        # Shell env wins: don't clobber a value already set in the environment.
+        set +u
+        if [ -z "${!key}" ]; then
+            export "$key=$value"
+        fi
+        set -u
+    done < "$file"
+}
+
 if [ -f "$INSTALL_DIR/.env" ]; then
-    set -a; . "$INSTALL_DIR/.env" 2>/dev/null || true; set +a
+    load_env_file "$INSTALL_DIR/.env"
 fi
 
 say()  { printf '\033[1;36m==> %s\033[0m\n' "$*"; }
