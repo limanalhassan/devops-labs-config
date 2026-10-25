@@ -20,6 +20,13 @@ MIN_DISK_GB=10
 MIN_RAM_GB=8
 DEFAULT_PORT=8090
 
+# If a pre-filled .env exists in the install dir, pick up every value from it
+# so a low-friction customer can edit two blanks and run the installer unattended.
+# Shell env still wins (letting a scripted install override).
+if [ -f "$INSTALL_DIR/.env" ]; then
+    set -a; . "$INSTALL_DIR/.env" 2>/dev/null || true; set +a
+fi
+
 say()  { printf '\033[1;36m==> %s\033[0m\n' "$*"; }
 ok()   { printf '    \033[1;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '    \033[1;33m!\033[0m %s\n' "$*" >&2; }

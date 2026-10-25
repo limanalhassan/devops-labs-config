@@ -20,6 +20,21 @@ $MinDiskGb = 10
 $MinRamGb = 8
 $DefaultPort = 8090
 
+# If a pre-filled .env exists in the install dir, pick up every value from it
+# so a low-friction customer can edit two blanks and run the installer unattended.
+# Existing process env vars still win (letting a scripted install override).
+$envFile = Join-Path $InstallDir ".env"
+if (Test-Path $envFile) {
+    Get-Content $envFile | ForEach-Object {
+        if ($_ -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$') {
+            $k = $Matches[1]; $v = $Matches[2]
+            if (-not [Environment]::GetEnvironmentVariable($k, 'Process')) {
+                [Environment]::SetEnvironmentVariable($k, $v, 'Process')
+            }
+        }
+    }
+}
+
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Ok   ($m) { Write-Host "    [OK] $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "    [!!] $m" -ForegroundColor Yellow }

@@ -38,9 +38,10 @@ Total time: about 2 minutes, mostly waiting for the image pull.
 
 If you don't have both of these, email @limanalhassan on GitHub.
 
-## Prefer to install by hand?
+## New here? Prefer step-by-step?
 
-See [INSTALL.md](INSTALL.md) for the step-by-step version without the script.
+- **[QUICKSTART.md](QUICKSTART.md)** — the easiest path: install Docker, fill in two blanks in a `.env` file, run one command. If you'd rather not pipe `curl` into `bash`, start here.
+- **[INSTALL.md](INSTALL.md)** — full manual walkthrough with every detail, prerequisites, and troubleshooting for every failure mode.
 
 ## Updating
 
