@@ -20,10 +20,17 @@ services:
       - data:/data
     restart: unless-stopped
 
-  # Lab image. Pulled on first use; pre-pull with
+  # Lab images. Pulled on first use; pre-pull with
   # `docker compose --profile images pull` to speed up the first lab start.
   workspace-python:
     image: ghcr.io/limanalhassan/devops-labs-workspace-python:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  # Gitea sidecar for the Git Level 2 collaboration labs. Only pulled when
+  # a lab starts the git profile; customers who stay in Python/Linux never
+  # download it.
+  gitea-sidecar:
+    image: ghcr.io/limanalhassan/devops-labs-gitea-sidecar:${DEVOPS_LABS_VERSION:-0}
     profiles: [images]
 
 volumes:
