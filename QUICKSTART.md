@@ -1,6 +1,6 @@
 # Quickstart (the easy way)
 
-**Three steps. About 2 minutes.** If you can edit a text file, you can do this.
+**Two steps. About 2 minutes.** No files to edit; the installer asks you for everything it needs.
 
 ## 1. Install Docker Desktop
 
@@ -10,42 +10,9 @@ If you don't have Docker already:
 - Windows: https://www.docker.com/products/docker-desktop/
 - Linux: https://docs.docker.com/engine/install/
 
-Open Docker Desktop after installing and wait until it says **"Docker is running"** in the bottom-left corner.
+Open Docker Desktop after installing and wait until it says **"Docker is running"** in the bottom-left corner. (On Mac and Windows the installer will try to open Docker Desktop for you if it's not already running.)
 
-## 2. Create your `.env` file
-
-Make a new folder for DevOps Labs and a file inside it called `.env`.
-
-**macOS / Linux:**
-```bash
-mkdir -p ~/devops-labs
-nano ~/devops-labs/.env
-```
-
-**Windows (PowerShell):**
-```powershell
-mkdir $env:USERPROFILE\devops-labs
-notepad $env:USERPROFILE\devops-labs\.env
-```
-
-Paste this template into the file and fill in the two values you were emailed:
-
-```ini
-# Paste the long string that starts with eyJ... here (no quotes, one line)
-DEVOPS_LABS_LICENSE_KEY=
-
-# Paste the long string that starts with github_pat_... here
-GHCR_TOKEN=
-
-# Port on your machine for the web UI. Change if 8090 is taken.
-DEVOPS_LABS_PORT=8090
-```
-
-Save and close the file.
-
-> **Where do the two values come from?** Both are in the welcome email you received from Liman. The first (`eyJ...`) is your license key. The second (`github_pat_...`) is your pull token for the Docker images.
-
-## 3. Run the installer
+## 2. Run the installer
 
 Open a terminal (Terminal on Mac, PowerShell on Windows, any shell on Linux) and run **one** of these:
 
@@ -59,15 +26,31 @@ curl -fsSL https://raw.githubusercontent.com/limanalhassan/devops-labs-config/ma
 irm https://raw.githubusercontent.com/limanalhassan/devops-labs-config/main/install.ps1 | iex
 ```
 
-The script sees your `.env`, reads both values, pulls the images, starts the stack, and prints the URL to open.
+The installer will:
+
+1. Check prerequisites (Docker, Compose, disk, RAM, port).
+2. Ask you for your **pull token** (`github_pat_...`). Hidden as you type.
+3. Ask you for your **license key** (`eyJ...`). Visible so you can confirm the paste.
+4. Ask what **port** you want for the browser UI (default 8090; press Enter to accept).
+5. Pull the images, start the stack, and print the URL to open.
 
 That's it. Point your browser at the URL (usually `http://localhost:8090`) and start learning.
+
+> **Where do the two values come from?** Both are in the welcome email you received from Liman. The first (`eyJ...`) is your license key. The second (`github_pat_...`) is your pull token for the Docker images.
 
 ---
 
 ## FAQ
 
-**I ran the installer without creating `.env` first.** No problem — the script will prompt you for both values. The `.env` approach is just slightly tidier.
+**Can I pre-fill the values instead of being prompted?** Yes. Create a file at `~/devops-labs/.env` (`%USERPROFILE%\devops-labs\.env` on Windows) with these three lines before running the installer:
+
+```ini
+DEVOPS_LABS_LICENSE_KEY=<your eyJ... key>
+GHCR_TOKEN=<your github_pat_... token>
+DEVOPS_LABS_PORT=8090
+```
+
+The installer will skip the prompts for any value it finds in that file. Useful for scripted or unattended installs.
 
 **I don't have an email with the two values.** Contact @limanalhassan on GitHub.
 

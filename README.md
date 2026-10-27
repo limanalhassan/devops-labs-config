@@ -20,6 +20,8 @@ curl -fsSL https://raw.githubusercontent.com/limanalhassan/devops-labs-config/ma
 irm https://raw.githubusercontent.com/limanalhassan/devops-labs-config/main/install.ps1 | iex
 ```
 
+Both installers will prompt you for your pull token (hidden input) and your license key as they go. No file to create first. If you'd rather supply the values non-interactively, see [INSTALL.md](INSTALL.md) for the `.env` approach.
+
 Both scripts do the same thing:
 1. Check prerequisites (Docker running, Compose v2, free disk, free RAM, port available).
 2. Ask for the pull token (one long string from your welcome email) and log in to ghcr.io.
