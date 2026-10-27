@@ -66,6 +66,36 @@ ok()   { printf '    \033[1;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '    \033[1;33m!\033[0m %s\n' "$*" >&2; }
 fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*" >&2; exit 1; }
 
+# True if we can prompt the user interactively. Covers two cases:
+#   1. Script was `bash install.sh` — stdin is a terminal.
+#   2. Script was `curl ... | bash` — stdin is the pipe, but /dev/tty is
+#      still open on the user's terminal. Reading from /dev/tty bypasses
+#      the pipe, so interactive prompts still work. Same trick rustup
+#      and homebrew use.
+can_prompt() {
+    [ -t 0 ] || { [ -r /dev/tty ] && [ -w /dev/tty ]; }
+}
+
+# Read a value from the user, hidden ($1="hidden") or visible, into
+# the variable named by $2. Reads from stdin if it's a terminal, otherwise
+# from /dev/tty so `curl | bash` can still prompt.
+prompt() {
+    local mode="$1" varname="$2" message="$3"
+    if [ -t 0 ]; then
+        if [ "$mode" = "hidden" ]; then
+            read -r -s -p "$message" "$varname"; echo
+        else
+            read -r -p "$message" "$varname"
+        fi
+    else
+        if [ "$mode" = "hidden" ]; then
+            read -r -s -p "$message" "$varname" </dev/tty; echo
+        else
+            read -r -p "$message" "$varname" </dev/tty
+        fi
+    fi
+}
+
 detect_os() {
     case "$(uname -s)" in
         Darwin)         echo "macos" ;;
@@ -224,11 +254,10 @@ ghcr_login() {
     if [ -n "${GHCR_TOKEN:-}" ]; then
         tok="$GHCR_TOKEN"
         echo "    (using GHCR_TOKEN from $INSTALL_DIR/.env or the environment)"
-    elif [ -t 0 ]; then
-        read -r -s -p "    Paste the pull token you were emailed (github_pat_...): " tok
-        echo
+    elif can_prompt; then
+        prompt hidden tok "    Paste the pull token you were emailed (github_pat_...): "
     else
-        fail "GHCR_TOKEN is not set and this script is being piped (stdin is not a terminal, so I can't prompt). Create $INSTALL_DIR/.env with GHCR_TOKEN=... and re-run, or export GHCR_TOKEN before the curl line. See https://github.com/limanalhassan/devops-labs-config#quick-install"
+        fail "GHCR_TOKEN is not set and no interactive terminal is available (not a TTY and no /dev/tty). Create $INSTALL_DIR/.env with GHCR_TOKEN=... and re-run."
     fi
     [ -n "$tok" ] || fail "Token is empty. Re-run and paste the token when prompted, or add it to $INSTALL_DIR/.env."
     echo "$tok" | docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null \
@@ -254,15 +283,15 @@ write_env() {
     local key port port_input
     if [ -n "${DEVOPS_LABS_LICENSE_KEY:-}" ]; then
         key="$DEVOPS_LABS_LICENSE_KEY"
-    elif [ -t 0 ]; then
-        read -r -p "    License key you were emailed (eyJ...): " key
+    elif can_prompt; then
+        prompt visible key "    License key you were emailed (eyJ...): "
     else
-        fail "DEVOPS_LABS_LICENSE_KEY is not set and this script is being piped (can't prompt). Add it to $INSTALL_DIR/.env and re-run."
+        fail "DEVOPS_LABS_LICENSE_KEY is not set and no interactive terminal is available. Add it to $INSTALL_DIR/.env and re-run."
     fi
     port="${DEVOPS_LABS_PORT:-$DEFAULT_PORT}"
-    if [ -t 0 ]; then
+    if can_prompt; then
         while :; do
-            read -r -p "    Port on this machine for the UI [$port]: " port_input
+            prompt visible port_input "    Port on this machine for the UI [$port]: "
             port="${port_input:-$port}"
             if port_in_use "$port"; then
                 warn "Port $port is already in use on this machine. Pick another."
