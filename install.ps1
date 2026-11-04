@@ -200,12 +200,29 @@ function Start-Stack {
     Say "Pulling images (about a minute the first time)"
     Push-Location $InstallDir
     try {
-        docker compose pull
-        if ($LASTEXITCODE -ne 0) {
-            Fail "Pull failed. Usually a token problem; re-run the installer to re-login."
+        # Docker Compose writes progress to stderr. Under $ErrorActionPreference='Stop'
+        # (set at the top of this script), PowerShell 5.1 treats ANY native-command
+        # stderr line as a terminating NativeCommandError and kills the script, even
+        # when docker's own exit code is 0. We can't change compose's behaviour, so
+        # we temporarily downgrade to 'Continue' around compose calls and judge
+        # success from $LASTEXITCODE instead.
+        $savedPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            docker compose pull
+            $pullCode = $LASTEXITCODE
+            if ($pullCode -ne 0) {
+                throw "docker compose pull failed with exit code $pullCode. Usually a token problem; re-run the installer to re-login."
+            }
+            Say "Starting the stack"
+            docker compose up -d | Out-Null
+            $upCode = $LASTEXITCODE
+            if ($upCode -ne 0) {
+                throw "docker compose up failed with exit code $upCode."
+            }
+        } finally {
+            $ErrorActionPreference = $savedPreference
         }
-        Say "Starting the stack"
-        docker compose up -d | Out-Null
     } finally {
         Pop-Location
     }
