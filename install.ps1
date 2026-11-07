@@ -215,7 +215,11 @@ function Start-Stack {
                 throw "docker compose pull failed with exit code $pullCode. Usually a token problem; re-run the installer to re-login."
             }
             Say "Starting the stack"
-            docker compose up -d | Out-Null
+            # --force-recreate: a previous install may have left an api container
+            # around with a stale port mapping. Without --force-recreate, 'up'
+            # just starts it again with the old binding. Force-recreate ensures
+            # the current .env wins.
+            docker compose up -d --force-recreate api | Out-Null
             $upCode = $LASTEXITCODE
             if ($upCode -ne 0) {
                 throw "docker compose up failed with exit code $upCode."
@@ -228,7 +232,16 @@ function Start-Stack {
     }
 
     Say "Confirming the license took effect"
-    $port = (Get-Content (Join-Path $InstallDir ".env") | Select-String '^DEVOPS_LABS_PORT=').ToString().Split('=')[1]
+    # Strip CR, whitespace, quotes. Without this, a Windows-style line ending or
+    # surrounding quotes in .env would leave junk in $port and Invoke-RestMethod
+    # would silently fail against a malformed URL.
+    $port = ((Get-Content (Join-Path $InstallDir ".env") | Select-String '^DEVOPS_LABS_PORT=').ToString() `
+             -replace '^DEVOPS_LABS_PORT=', '' `
+             -replace '[\s\r\n"'']', '')
+    if ($port -notmatch '^\d+$') {
+        Fail "DEVOPS_LABS_PORT in $InstallDir\.env is not a valid number (got '$port'). Fix it and re-run."
+    }
+    Write-Host "    (polling http://localhost:$port/api/license)"
 
     # Was a key provided? Trial after providing a key means the key was
     # malformed, truncated, or signed with the wrong keypair, so we must fail.
@@ -245,10 +258,12 @@ function Start-Stack {
     }
 
     function Stop-AndFail ($msg) {
-        Warn "Last 40 lines of the api container log (for diagnosis):"
-        Push-Location $InstallDir
+        Warn "Container port mapping (so you can see where traffic should land):"
         $savedPreference = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
+        try { docker port devops-labs-api-1 2>&1 | ForEach-Object { Write-Host "        $_" } } catch { }
+        Warn "Last 40 lines of the api container log (for diagnosis):"
+        Push-Location $InstallDir
         try { docker compose logs api --tail 40 2>&1 | ForEach-Object { Write-Host "        $_" } } catch { }
         Warn "Tearing down the half-started stack so it doesn't sit in a broken state..."
         try { docker compose down | Out-Null } catch { }

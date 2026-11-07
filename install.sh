@@ -318,10 +318,23 @@ start_stack() {
     (cd "$INSTALL_DIR" && docker compose pull) \
         || fail "Pull failed. Usually a token problem; re-run the installer to re-login."
     say "Starting the stack"
-    (cd "$INSTALL_DIR" && docker compose up -d)
+    # --force-recreate: if a previous install left an api container around with
+    # a stale port mapping, docker compose up alone would just start it again
+    # with the old binding. Force-recreate ensures the current .env wins.
+    (cd "$INSTALL_DIR" && docker compose up -d --force-recreate api)
     say "Confirming the license took effect"
     local port
-    port=$(grep ^DEVOPS_LABS_PORT= "$INSTALL_DIR/.env" | cut -d= -f2)
+    # Strip CR, whitespace, and surrounding quotes. Without this, a Windows-style
+    # line ending in .env would leave an invisible \r in $port and every curl
+    # below would silently fail against a malformed URL.
+    port=$(grep ^DEVOPS_LABS_PORT= "$INSTALL_DIR/.env" | cut -d= -f2 | tr -d '\r\n"' "'" | sed 's/[[:space:]]//g')
+    # Belt-and-suspenders: port must be a reasonable positive integer.
+    case "$port" in
+        ''|*[!0-9]*)
+            fail "DEVOPS_LABS_PORT in $INSTALL_DIR/.env is not a valid number (got '$port'). Fix it and re-run."
+            ;;
+    esac
+    echo "    (polling http://localhost:$port/api/license)"
     # Was a key provided at all? If so, trial state is a hard fail; it means
     # the key was unreadable or malformed. If nothing was provided, trial is
     # the intended state and only expiry states are a problem.
@@ -345,6 +358,8 @@ start_stack() {
     # Dumps the last 40 lines of the api log first so the user sees what
     # actually went wrong (an expired key, a crash, a port conflict etc.).
     stop_and_fail() {
+        warn "Container port mapping (so you can see where traffic should land):"
+        (docker port devops-labs-api-1 2>&1) | sed 's/^/        /' >&2 || true
         warn "Last 40 lines of the api container log (for diagnosis):"
         (cd "$INSTALL_DIR" && docker compose logs api --tail 40 2>&1) | sed 's/^/        /' >&2 || true
         warn "Tearing down the half-started stack so it doesn't sit in a broken state..."
