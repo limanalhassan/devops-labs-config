@@ -342,7 +342,11 @@ start_stack() {
     local kind
     kind=$(printf '%s' "$status" | sed -n 's/.*"kind":"\([^"]*\)".*/\1/p')
     # Teardown helper: a bad license state should leave nothing half-running.
+    # Dumps the last 40 lines of the api log first so the user sees what
+    # actually went wrong (an expired key, a crash, a port conflict etc.).
     stop_and_fail() {
+        warn "Last 40 lines of the api container log (for diagnosis):"
+        (cd "$INSTALL_DIR" && docker compose logs api --tail 40 2>&1) | sed 's/^/        /' >&2 || true
         warn "Tearing down the half-started stack so it doesn't sit in a broken state..."
         (cd "$INSTALL_DIR" && docker compose down) >/dev/null 2>&1 || true
         fail "$1"

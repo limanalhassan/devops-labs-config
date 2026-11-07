@@ -245,10 +245,12 @@ function Start-Stack {
     }
 
     function Stop-AndFail ($msg) {
-        Warn "Tearing down the half-started stack so it doesn't sit in a broken state..."
+        Warn "Last 40 lines of the api container log (for diagnosis):"
         Push-Location $InstallDir
         $savedPreference = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
+        try { docker compose logs api --tail 40 2>&1 | ForEach-Object { Write-Host "        $_" } } catch { }
+        Warn "Tearing down the half-started stack so it doesn't sit in a broken state..."
         try { docker compose down | Out-Null } catch { }
         $ErrorActionPreference = $savedPreference
         Pop-Location
