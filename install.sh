@@ -20,6 +20,15 @@ MIN_DISK_GB=10
 MIN_RAM_GB=8
 DEFAULT_PORT=8090
 
+# Drop any inherited DEVOPS_LABS_* env vars from the caller's shell. Docker
+# compose checks the shell environment BEFORE the .env file, so a stale
+# `DEVOPS_LABS_LICENSE_KEY=` (empty but set) from a prior shell session, a
+# sourced .env, or some editor plugin would silently override the real key
+# the user is about to paste. Unsetting here forces .env to be the single
+# source of truth. DEVOPS_LABS_HOME was already captured into INSTALL_DIR
+# above, so it's safe to clear.
+unset DEVOPS_LABS_LICENSE_KEY DEVOPS_LABS_PORT DEVOPS_LABS_HOME DEVOPS_LABS_VERSION
+
 # If a pre-filled .env exists in the install dir, pick up every value from it
 # so a low-friction customer can edit two blanks and run the installer unattended.
 # Shell env still wins (letting a scripted install override).

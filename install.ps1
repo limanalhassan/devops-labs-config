@@ -20,6 +20,16 @@ $MinDiskGb = 10
 $MinRamGb = 8
 $DefaultPort = 8090
 
+# Drop any inherited DEVOPS_LABS_* process env vars. Docker compose checks the
+# process env BEFORE the .env file, so a stale empty value from a prior shell
+# session would silently override the real key in .env. Unsetting here forces
+# .env to be the single source of truth. DEVOPS_LABS_HOME was already captured
+# into $InstallDir above.
+$env:DEVOPS_LABS_LICENSE_KEY = $null
+$env:DEVOPS_LABS_PORT = $null
+$env:DEVOPS_LABS_HOME = $null
+$env:DEVOPS_LABS_VERSION = $null
+
 # If a pre-filled .env exists in the install dir, pick up every value from it
 # so a low-friction customer can edit two blanks and run the installer unattended.
 # Existing process env vars still win (letting a scripted install override).
