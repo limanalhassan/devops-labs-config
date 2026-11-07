@@ -230,24 +230,46 @@ function Start-Stack {
     Say "Confirming the license took effect"
     $port = (Get-Content (Join-Path $InstallDir ".env") | Select-String '^DEVOPS_LABS_PORT=').ToString().Split('=')[1]
 
+    # Was a key provided? Trial after providing a key means the key was
+    # malformed, truncated, or signed with the wrong keypair, so we must fail.
+    $keyWasProvided = Select-String -Path (Join-Path $InstallDir ".env") -Pattern '^DEVOPS_LABS_LICENSE_KEY=..' -Quiet
+
+    # Poll /api/license for up to 60s (slow first-start after a cold pull).
     $status = $null
-    for ($i = 0; $i -lt 15; $i++) {
+    for ($i = 0; $i -lt 30; $i++) {
         try {
             $status = Invoke-RestMethod -Uri "http://localhost:$port/api/license" -TimeoutSec 2
             if ($status) { break }
         } catch { }
-        Start-Sleep -Seconds 1
+        Start-Sleep -Seconds 2
+    }
+
+    function Stop-AndFail ($msg) {
+        Warn "Tearing down the half-started stack so it doesn't sit in a broken state..."
+        Push-Location $InstallDir
+        $savedPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { docker compose down | Out-Null } catch { }
+        $ErrorActionPreference = $savedPreference
+        Pop-Location
+        Fail $msg
     }
 
     if (-not $status) {
-        Warn "Could not read /api/license. Try: curl http://localhost:$port/api/license"
+        Stop-AndFail "The API never responded on http://localhost:$port/api/license after 60s. Likely a boot issue; check 'docker compose -p devops-labs logs api' for the real error."
     } else {
         switch ($status.kind) {
             "licensed"        { Ok "License is active." }
-            "trial"           { Warn "No valid license key; a 14-day trial has started." }
-            "expired-grace"   { Warn "License is in the 7-day grace period." }
-            "expired-blocked" { Warn "License is expired. API is blocked. Contact @limanalhassan." }
-            default           { Warn "Unexpected license state: $($status.kind)" }
+            "trial"           {
+                if ($keyWasProvided) {
+                    Stop-AndFail "Your license key was not accepted; the API fell back to a trial. The key may be malformed, truncated, or signed with a different keypair than this build expects. Fix $InstallDir\.env and re-run."
+                } else {
+                    Warn "No license key provided; a 14-day trial has started."
+                }
+            }
+            "expired-grace"   { Warn "License is in the 7-day grace period. The app works, but please renew soon." }
+            "expired-blocked" { Stop-AndFail "License is expired past its 7-day grace period. The API will return 503 on every request. Contact @limanalhassan for a renewal, then update $InstallDir\.env with the new key and re-run." }
+            default           { Stop-AndFail "Unexpected license state '$($status.kind)'. Run 'curl -s http://localhost:$port/api/license' for the full response." }
         }
     }
     Write-Host ""

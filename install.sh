@@ -67,8 +67,8 @@ warn() { printf '    \033[1;33m!\033[0m %s\n' "$*" >&2; }
 fail() { printf '\033[1;31m!!  %s\033[0m\n' "$*" >&2; exit 1; }
 
 # True if we can prompt the user interactively. Covers two cases:
-#   1. Script was `bash install.sh` — stdin is a terminal.
-#   2. Script was `curl ... | bash` — stdin is the pipe, but /dev/tty is
+#   1. Script was `bash install.sh`, stdin is a terminal.
+#   2. Script was `curl ... | bash`, stdin is the pipe, but /dev/tty is
 #      still open on the user's terminal. Reading from /dev/tty bypasses
 #      the pipe, so interactive prompts still work. Same trick rustup
 #      and homebrew use.
@@ -322,23 +322,54 @@ start_stack() {
     say "Confirming the license took effect"
     local port
     port=$(grep ^DEVOPS_LABS_PORT= "$INSTALL_DIR/.env" | cut -d= -f2)
-    # Wait up to 15s for the API to come up.
+    # Was a key provided at all? If so, trial state is a hard fail; it means
+    # the key was unreadable or malformed. If nothing was provided, trial is
+    # the intended state and only expiry states are a problem.
+    local key_was_provided=0
+    if grep -q "^DEVOPS_LABS_LICENSE_KEY=.." "$INSTALL_DIR/.env"; then
+        key_was_provided=1
+    fi
+    # Poll /api/license for up to 60s. Each attempt caps at 2s so a slow or
+    # hung API doesn't blow the whole budget on one call. First-start boots
+    # can take a while after a cold image pull.
     local tries=0 status=""
-    while [ $tries -lt 15 ]; do
-        status=$(curl -fsS "http://localhost:$port/api/license" 2>/dev/null | tr -d ' \n' || true)
+    while [ $tries -lt 30 ]; do
+        status=$(curl -fsS --max-time 2 "http://localhost:$port/api/license" 2>/dev/null | tr -d ' \n' || true)
         [ -n "$status" ] && break
-        sleep 1
+        sleep 2
         tries=$((tries + 1))
     done
     local kind
     kind=$(printf '%s' "$status" | sed -n 's/.*"kind":"\([^"]*\)".*/\1/p')
+    # Teardown helper: a bad license state should leave nothing half-running.
+    stop_and_fail() {
+        warn "Tearing down the half-started stack so it doesn't sit in a broken state..."
+        (cd "$INSTALL_DIR" && docker compose down) >/dev/null 2>&1 || true
+        fail "$1"
+    }
     case "$kind" in
-        licensed)        ok "License is active." ;;
-        trial)           warn "No valid license key; a 14-day trial has started." ;;
-        expired-grace)   warn "License is in the 7-day grace period." ;;
-        expired-blocked) warn "License is expired. API is blocked. Contact @limanalhassan." ;;
-        "")              warn "Could not read /api/license. Try: curl http://localhost:$port/api/license" ;;
-        *)               warn "Unexpected license state: $kind" ;;
+        licensed)
+            ok "License is active."
+            ;;
+        trial)
+            if [ "$key_was_provided" -eq 1 ]; then
+                stop_and_fail "Your license key was not accepted; the API fell back to a trial. The key may be malformed, truncated, or signed with a different keypair than this build expects. Fix $INSTALL_DIR/.env and re-run."
+            else
+                warn "No license key provided; a 14-day trial has started."
+            fi
+            ;;
+        expired-grace)
+            warn "License is in the 7-day grace period. The app works, but please renew soon."
+            ;;
+        expired-blocked)
+            stop_and_fail "License is expired past its 7-day grace period. The API will return 503 on every request. Contact @limanalhassan for a renewal, then update $INSTALL_DIR/.env with the new key and re-run."
+            ;;
+        "")
+            stop_and_fail "The API never responded on http://localhost:$port/api/license after 60s. Likely a boot issue; check 'docker compose -p devops-labs logs api' for the real error."
+            ;;
+        *)
+            stop_and_fail "Unexpected license state '$kind'. Run 'curl -s http://localhost:$port/api/license' for the full response."
+            ;;
     esac
     echo
     say "Done. Open http://localhost:$port in your browser."
