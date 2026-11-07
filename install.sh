@@ -326,8 +326,9 @@ start_stack() {
     local port
     # Strip CR, whitespace, and surrounding quotes. Without this, a Windows-style
     # line ending in .env would leave an invisible \r in $port and every curl
-    # below would silently fail against a malformed URL.
-    port=$(grep ^DEVOPS_LABS_PORT= "$INSTALL_DIR/.env" | cut -d= -f2 | tr -d '\r\n"' "'" | sed 's/[[:space:]]//g')
+    # below would silently fail against a malformed URL. `tr -d` takes a single
+    # string argument; macOS and GNU both accept this form.
+    port=$(grep ^DEVOPS_LABS_PORT= "$INSTALL_DIR/.env" | cut -d= -f2 | tr -d " \t\r\n\"'")
     # Belt-and-suspenders: port must be a reasonable positive integer.
     case "$port" in
         ''|*[!0-9]*)
