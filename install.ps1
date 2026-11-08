@@ -301,6 +301,11 @@ function Start-Stack {
     }
     Write-Host ""
     Say "Done. Open http://localhost:$port in your browser."
+    # Auto-open the URL unless the user opted out. On Windows, Start-Process
+    # with a URL hands off to the default browser via the shell.
+    if (-not $env:DEVOPS_LABS_NO_BROWSER) {
+        try { Start-Process "http://localhost:$port" | Out-Null } catch { }
+    }
 }
 
 Check-Prereqs

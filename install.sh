@@ -402,6 +402,28 @@ start_stack() {
     esac
     echo
     say "Done. Open http://localhost:$port in your browser."
+    open_browser "http://localhost:$port"
+}
+
+open_browser() {
+    # Auto-open the URL unless the user opted out or we're headless.
+    #   DEVOPS_LABS_NO_BROWSER=1     scripted / CI installs
+    #   SSH_CONNECTION / SSH_CLIENT  running over SSH, no display
+    local url="$1"
+    [ "${DEVOPS_LABS_NO_BROWSER:-0}" = "1" ] && return 0
+    [ -n "${SSH_CONNECTION:-}${SSH_CLIENT:-}" ] && return 0
+    case "$(detect_os)" in
+        macos)
+            open "$url" >/dev/null 2>&1 || true
+            ;;
+        linux)
+            command -v xdg-open >/dev/null 2>&1 && xdg-open "$url" >/dev/null 2>&1 || true
+            ;;
+        windows)
+            # Git Bash / MSYS inherits `start` from cmd.
+            start "" "$url" >/dev/null 2>&1 || true
+            ;;
+    esac
 }
 
 main() {
