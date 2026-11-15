@@ -26,6 +26,40 @@ services:
     image: ghcr.io/limanalhassan/devops-labs-workspace-python:${DEVOPS_LABS_VERSION:-0}
     profiles: [images]
 
+  workspace-linux:
+    image: ghcr.io/limanalhassan/devops-labs-workspace-linux:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  # Docker labs: a workspace with the Docker CLI and the lab's own engine. The engine runs
+  # privileged inside the lab and never uses your own Docker's containers or images.
+  workspace-docker:
+    image: ghcr.io/limanalhassan/devops-labs-workspace-docker:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  docker-engine:
+    image: ghcr.io/limanalhassan/devops-labs-docker-engine:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  # Kubernetes labs: a workspace with kubectl and the lab's own one-node cluster (k3s). The cluster
+  # runs privileged inside the lab and is removed when the lab ends.
+  workspace-kubernetes:
+    image: ghcr.io/limanalhassan/devops-labs-workspace-kubernetes:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  k3s-cluster:
+    image: ghcr.io/limanalhassan/devops-labs-k3s-cluster:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  # Terraform labs: a workspace with Terraform, OpenTofu and the AWS CLI, and a fake AWS (Moto) that
+  # runs in memory. Nothing real is touched and nothing runs privileged.
+  workspace-terraform:
+    image: ghcr.io/limanalhassan/devops-labs-workspace-terraform:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  aws-emulator:
+    image: ghcr.io/limanalhassan/devops-labs-aws-emulator:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
   # Gitea sidecar for the Git Level 2 collaboration labs. Only pulled when
   # a lab starts the git profile; customers who stay in Python/Linux never
   # download it.

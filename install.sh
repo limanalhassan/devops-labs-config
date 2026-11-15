@@ -323,14 +323,56 @@ EOF
 }
 
 start_stack() {
-    say "Pulling images (about a minute the first time)"
-    (cd "$INSTALL_DIR" && docker compose pull) \
+    # Any lab containers from a previous install carry the `devops-labs` label the
+    # engine stamps on every one it creates. Stop and remove them BEFORE the
+    # pull+recreate so no running lesson keeps a stale image alive (a learner
+    # upgrading would otherwise see the new API talking to an old Gitea sidecar
+    # or workspace-terraform until they manually "End lab"). Safe to run every
+    # time: the list is empty on a fresh install.
+    say "Stopping any running lab containers (so the upgrade actually takes effect)"
+    local stale
+    stale=$(docker ps -aq --filter 'label=devops-labs' 2>/dev/null || true)
+    if [ -n "$stale" ]; then
+        docker rm -f $stale >/dev/null 2>&1 || true
+        ok "Removed $(printf '%s\n' "$stale" | wc -l | tr -d ' ') stale lab container(s)."
+    fi
+    # Same for lab networks (one per session).
+    local stale_nets
+    stale_nets=$(docker network ls -q --filter 'label=devops-labs' 2>/dev/null || true)
+    if [ -n "$stale_nets" ]; then
+        docker network rm $stale_nets >/dev/null 2>&1 || true
+    fi
+
+    # Pull BOTH the api image AND the lab images. Without `--profile images`,
+    # `docker compose pull` only pulls the api; the per-lesson images stay on
+    # whatever the user had cached from last time, which is exactly the "stuck
+    # on stale containers" bug this installer is trying to avoid. One pull up
+    # front is slower, but the next lab start is instant and uses the fix.
+    say "Pulling images (first time: about two minutes; upgrades: seconds)"
+    (cd "$INSTALL_DIR" && docker compose --profile images pull) \
         || fail "Pull failed. Usually a token problem; re-run the installer to re-login."
+
     say "Starting the stack"
     # --force-recreate: if a previous install left an api container around with
-    # a stale port mapping, docker compose up alone would just start it again
-    # with the old binding. Force-recreate ensures the current .env wins.
+    # a stale port mapping OR an older image id, docker compose up alone would
+    # just start it again with the old binding. Force-recreate ensures the
+    # current .env + freshly-pulled image win.
     (cd "$INSTALL_DIR" && docker compose up -d --force-recreate api)
+
+    # Reclaim disk from the previous version's now-untagged image layers. `docker
+    # compose pull` replaces tags like `devops-labs-api:0` in place, which leaves
+    # the OLD layers dangling (no tag, no running container). After enough
+    # upgrades a single customer accumulates 10-20 GB of these — one real user
+    # reclaimed 16.75 GB with `docker system prune -a` after running the labs
+    # for a few weeks. `image prune -f` only touches dangling images; it never
+    # removes a tagged image or anything a container is using, so it's safe to
+    # run every install. Build cache follows the same lifecycle on local dev,
+    # but customers using prebuilt images never touch it.
+    local reclaimed
+    reclaimed=$(docker image prune -f 2>&1 | sed -n 's/.*Total reclaimed space: \(.*\)/\1/p')
+    if [ -n "$reclaimed" ] && [ "$reclaimed" != "0B" ]; then
+        ok "Reclaimed $reclaimed of disk from old image layers."
+    fi
     say "Confirming the license took effect"
     local port
     # Strip CR, whitespace, and surrounding quotes. Without this, a Windows-style

@@ -207,7 +207,26 @@ function Write-Env {
 }
 
 function Start-Stack {
-    Say "Pulling images (about a minute the first time)"
+    # Stop any lab containers from a previous install BEFORE the pull+recreate.
+    # Otherwise a running lesson keeps a stale sidecar image (e.g. the old Gitea)
+    # alive while the api gets replaced, and the learner sees the bug the
+    # upgrade was supposed to fix until they manually End lab. The engine stamps
+    # `devops-labs` on every container it creates; filtering by that label
+    # catches all of them and nothing else. Safe on a fresh install (empty list).
+    Say "Stopping any running lab containers (so the upgrade actually takes effect)"
+    $stale = docker ps -aq --filter "label=devops-labs" 2>$null
+    if ($stale) {
+        docker rm -f $stale 2>$null | Out-Null
+        $count = @($stale).Count
+        Ok "Removed $count stale lab container(s)."
+    }
+    # Same for lab networks the engine created (one per session).
+    $staleNets = docker network ls -q --filter "label=devops-labs" 2>$null
+    if ($staleNets) {
+        docker network rm $staleNets 2>$null | Out-Null
+    }
+
+    Say "Pulling images (first time: about two minutes; upgrades: seconds)"
     Push-Location $InstallDir
     try {
         # Docker Compose writes progress to stderr. Under $ErrorActionPreference='Stop'
@@ -219,20 +238,38 @@ function Start-Stack {
         $savedPreference = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            docker compose pull
+            # `--profile images` picks up every lab image too (workspace-*, gitea-sidecar,
+            # etc.). Without it, `docker compose pull` would only refresh the api and
+            # leave the per-lesson images on whatever was cached from last time, which
+            # is the "stuck on stale containers" bug this installer is trying to avoid.
+            docker compose --profile images pull
             $pullCode = $LASTEXITCODE
             if ($pullCode -ne 0) {
                 throw "docker compose pull failed with exit code $pullCode. Usually a token problem; re-run the installer to re-login."
             }
             Say "Starting the stack"
             # --force-recreate: a previous install may have left an api container
-            # around with a stale port mapping. Without --force-recreate, 'up'
-            # just starts it again with the old binding. Force-recreate ensures
-            # the current .env wins.
+            # around with a stale port mapping OR an older image id. Without
+            # --force-recreate, 'up' just starts it again with the old binding.
+            # Force-recreate ensures the current .env + freshly-pulled image win.
             docker compose up -d --force-recreate api | Out-Null
             $upCode = $LASTEXITCODE
             if ($upCode -ne 0) {
                 throw "docker compose up failed with exit code $upCode."
+            }
+
+            # Reclaim disk from the previous version's now-untagged image layers.
+            # `docker compose pull` replaces tags in place, leaving the OLD layers
+            # dangling (no tag, no running container). After a few upgrades a
+            # customer accumulates 10-20 GB of these. `image prune -f` only
+            # touches dangling images; it never removes a tagged image or
+            # anything a container is using, so it's safe to run every install.
+            $pruneOutput = (docker image prune -f 2>&1 | Out-String)
+            if ($pruneOutput -match 'Total reclaimed space:\s+(.+)') {
+                $reclaimed = $Matches[1].Trim()
+                if ($reclaimed -and $reclaimed -ne '0B') {
+                    Ok "Reclaimed $reclaimed of disk from old image layers."
+                }
             }
         } finally {
             $ErrorActionPreference = $savedPreference
