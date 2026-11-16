@@ -18,6 +18,9 @@ services:
       # The API creates and removes lab containers through your Docker engine.
       - /var/run/docker.sock:/var/run/docker.sock
       - data:/data
+      # Share your ghcr.io sign-in so the UI's "Download all for offline" button
+      # can pull images with the same token install.sh set up (read-only).
+      - ${HOME}/.docker/config.json:/root/.docker/config.json:ro
     restart: unless-stopped
 
   # Lab images. Pulled on first use; pre-pull with
@@ -65,6 +68,64 @@ services:
   # download it.
   gitea-sidecar:
     image: ghcr.io/limanalhassan/devops-labs-gitea-sidecar:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  # Ansible labs: a control node with the ansible-core CLI and three managed
+  # nodes reached over SSH.
+  workspace-ansible:
+    image: ghcr.io/limanalhassan/devops-labs-workspace-ansible:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  ansible-node:
+    image: ghcr.io/limanalhassan/devops-labs-ansible-node:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  # Jenkins labs: a Jenkins controller plus a build agent.
+  workspace-jenkins:
+    image: ghcr.io/limanalhassan/devops-labs-workspace-jenkins:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  jenkins-server:
+    image: ghcr.io/limanalhassan/devops-labs-jenkins-server:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  jenkins-agent:
+    image: ghcr.io/limanalhassan/devops-labs-jenkins-agent:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  # Prometheus and Grafana labs: the full monitoring stack with a workspace.
+  workspace-monitoring:
+    image: ghcr.io/limanalhassan/devops-labs-workspace-monitoring:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  monitoring-stack:
+    image: ghcr.io/limanalhassan/devops-labs-monitoring-stack:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  monitoring-grafana:
+    image: ghcr.io/limanalhassan/devops-labs-monitoring-grafana:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  # Helm labs: a workspace with Helm, a k3s cluster, and a chart repository.
+  workspace-helm:
+    image: ghcr.io/limanalhassan/devops-labs-workspace-helm:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  k3s-helm:
+    image: ghcr.io/limanalhassan/devops-labs-k3s-helm:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  helm-charts:
+    image: ghcr.io/limanalhassan/devops-labs-helm-charts:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  # Argo CD labs: a workspace with the argocd CLI and a k3s cluster with Argo CD pre-installed.
+  workspace-argocd:
+    image: ghcr.io/limanalhassan/devops-labs-workspace-argocd:${DEVOPS_LABS_VERSION:-0}
+    profiles: [images]
+
+  k3s-argocd:
+    image: ghcr.io/limanalhassan/devops-labs-k3s-argocd:${DEVOPS_LABS_VERSION:-0}
     profiles: [images]
 
 volumes:
