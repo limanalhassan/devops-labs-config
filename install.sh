@@ -3,14 +3,22 @@
 # Works on macOS, Linux, and Windows via Git Bash or WSL2.
 #
 # Walkthrough:
-#   1. Checks prerequisites: Docker, Docker Compose v2, curl, port, disk, RAM.
-#   2. Asks for the GitHub pull token and logs into ghcr.io.
-#   3. Downloads compose.yaml and .env.example into ~/devops-labs/.
-#   4. Asks for your license key and port, writes .env.
-#   5. Pulls images and starts the stack.
-#   6. Confirms /api/license shows kind=licensed and prints the URL.
+#   1. Detects the container runtime; if none is present, installs Rancher
+#      Desktop (preferred: free, open source) or a Docker Desktop fallback,
+#      and bootstraps Homebrew on macOS if that's also missing.
+#   2. Checks prerequisites: Docker Compose v2, curl, port, disk, RAM.
+#   3. Asks for the GitHub pull token and logs into ghcr.io.
+#   4. Downloads compose.yaml and .env.example into ~/devops-labs/.
+#   5. Asks for your license key and port, writes .env.
+#   6. Pulls images and starts the stack.
+#   7. Confirms /api/license shows kind=licensed and prints the URL.
 #
 # Re-run any time to tweak anything. Values already set in .env survive.
+#
+# Non-interactive install (CI, automation):
+#   DEVOPS_LABS_RUNTIME=rancher|docker|skip  — pick without prompting.
+#     skip = fail if no runtime (don't install one).
+#   DEVOPS_LABS_AUTO_INSTALL=1  — accept all "install this?" prompts as yes.
 set -euo pipefail
 
 INSTALL_DIR="${DEVOPS_LABS_HOME:-$HOME/devops-labs}"
@@ -19,6 +27,10 @@ GHCR_USER="limanalhassan"
 MIN_DISK_GB=10
 MIN_RAM_GB=8
 DEFAULT_PORT=8090
+# Rancher Desktop's first boot provisions a VM and starts dockerd. That's slow:
+# plan for 6 minutes before giving up. Docker Desktop first boot is ~60-90s.
+RANCHER_BOOT_SECONDS=360
+DOCKER_BOOT_SECONDS=90
 
 # Drop any inherited DEVOPS_LABS_* env vars from the caller's shell. Docker
 # compose checks the shell environment BEFORE the .env file, so a stale
@@ -144,48 +156,74 @@ port_in_use() {
     return 1
 }
 
-wait_for_docker_daemon() {
-    # Try to start Docker Desktop (Mac/Windows) and poll `docker info` for up
-    # to 90s. On Linux, docker is a system service we don't start for the user.
+wait_for_runtime_daemon() {
+    # Try to launch the GUI runtime app (Mac/Windows) if it's installed, then poll
+    # `docker info` until the daemon answers or the budget runs out.
     # Returns 0 if the daemon comes up, 1 otherwise.
-    local os="$1"
+    #   $1 = os (macos|linux|windows)
+    #   $2 = runtime ("docker" or "rancher"); which app to launch and how long to wait.
+    local os="$1" runtime="$2"
+    local budget
+    if [ "$runtime" = "rancher" ]; then
+        budget="$RANCHER_BOOT_SECONDS"
+    else
+        budget="$DOCKER_BOOT_SECONDS"
+    fi
     case "$os" in
         macos)
-            if [ -d "/Applications/Docker.app" ]; then
-                warn "Docker daemon isn't running. Launching Docker Desktop (first start can take ~60s)..."
+            if [ "$runtime" = "rancher" ] && [ -d "/Applications/Rancher Desktop.app" ]; then
+                warn "Rancher Desktop isn't running. Launching (first boot can take 3-6 minutes)..."
+                open -a "Rancher Desktop" >/dev/null 2>&1 || true
+            elif [ -d "/Applications/Docker.app" ]; then
+                warn "Docker Desktop isn't running. Launching (first start ~60s)..."
                 open -a Docker >/dev/null 2>&1 || true
             else
-                warn "Docker Desktop isn't installed in /Applications. Start Docker and re-run, or install from https://www.docker.com/products/docker-desktop/"
+                warn "No container runtime app found in /Applications. Install Rancher Desktop (https://rancherdesktop.io/) or Docker Desktop and re-run."
                 return 1
             fi
             ;;
         windows)
-            local dd=""
-            for cand in \
-                "/c/Program Files/Docker/Docker/Docker Desktop.exe" \
-                "$HOME/AppData/Local/Docker/Docker Desktop.exe"; do
-                [ -f "$cand" ] && dd="$cand" && break
-            done
-            if [ -n "$dd" ]; then
-                warn "Docker daemon isn't running. Launching Docker Desktop (first start can take ~60s)..."
-                "$dd" >/dev/null 2>&1 &
+            local exe=""
+            if [ "$runtime" = "rancher" ]; then
+                for cand in \
+                    "/c/Program Files/Rancher Desktop/Rancher Desktop.exe" \
+                    "$HOME/AppData/Local/Programs/Rancher Desktop/Rancher Desktop.exe"; do
+                    [ -f "$cand" ] && exe="$cand" && break
+                done
+            fi
+            if [ -z "$exe" ]; then
+                for cand in \
+                    "/c/Program Files/Docker/Docker/Docker Desktop.exe" \
+                    "$HOME/AppData/Local/Docker/Docker Desktop.exe"; do
+                    [ -f "$cand" ] && exe="$cand" && break
+                done
+            fi
+            if [ -n "$exe" ]; then
+                warn "Container runtime isn't running. Launching \"$(basename "$exe")\" (first boot can take a couple of minutes)..."
+                "$exe" >/dev/null 2>&1 &
                 disown 2>/dev/null || true
             else
-                warn "Docker Desktop isn't installed. Start it and re-run, or install from https://www.docker.com/products/docker-desktop/"
+                warn "No container runtime found. Install Rancher Desktop (https://rancherdesktop.io/) or Docker Desktop and re-run."
                 return 1
             fi
             ;;
         linux)
-            warn "Docker daemon isn't running. Start it with: sudo systemctl start docker"
+            # Linux has no "GUI app" to open generically; dockerd is a service, and
+            # Rancher Desktop on Linux is launched from the applications menu.
+            if [ "$runtime" = "rancher" ]; then
+                warn "Rancher Desktop isn't running. Launch it from your applications menu and wait for 'Running' before re-running the installer."
+            else
+                warn "Docker daemon isn't running. Start it with: sudo systemctl start docker"
+            fi
             return 1
             ;;
         *)
             return 1
             ;;
     esac
-    # Poll up to ~90s.
-    local tries=0
-    while [ $tries -lt 45 ]; do
+    # Poll in 2s increments.
+    local tries=0 max=$((budget / 2))
+    while [ $tries -lt $max ]; do
         if docker info >/dev/null 2>&1; then
             return 0
         fi
@@ -193,6 +231,299 @@ wait_for_docker_daemon() {
         tries=$((tries + 1))
     done
     return 1
+}
+
+# Back-compat shim: older copies of this script called wait_for_docker_daemon
+# with a single arg. Keep the symbol around so a repeated invocation from a
+# script bundle doesn't break.
+wait_for_docker_daemon() { wait_for_runtime_daemon "$1" docker; }
+
+# -- Container runtime detection --
+#
+# Returns one of:
+#   docker-running    docker info succeeds; the context is Docker Desktop or native dockerd.
+#   rancher-running   docker info succeeds; the active docker context is Rancher Desktop.
+#   docker-installed  docker binary present, Docker Desktop app detected, daemon down.
+#   rancher-installed rancher-desktop app detected, daemon down.
+#   none              nothing usable here; we'll offer to install Rancher Desktop.
+is_rancher_active_context() {
+    # Several signals: an active context named rancher-desktop, or an app known
+    # to be installed on this platform. Any one of them is enough.
+    docker context ls 2>/dev/null | grep -qE '^\*?\s*rancher-desktop\s' \
+        && docker context ls 2>/dev/null | awk '/^\*/{print $1,$2}' | grep -q rancher-desktop \
+        && return 0
+    # Fallback: app bundle present and no Docker Desktop one is.
+    case "$(detect_os)" in
+        macos)
+            [ -d "/Applications/Rancher Desktop.app" ] && [ ! -d "/Applications/Docker.app" ] && return 0
+            ;;
+    esac
+    return 1
+}
+
+detect_runtime() {
+    local os
+    os=$(detect_os)
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        if is_rancher_active_context; then
+            echo "rancher-running"
+        else
+            echo "docker-running"
+        fi
+        return
+    fi
+    # No reachable daemon. Check installed GUI apps.
+    case "$os" in
+        macos)
+            if [ -d "/Applications/Rancher Desktop.app" ]; then
+                echo "rancher-installed"
+            elif [ -d "/Applications/Docker.app" ]; then
+                echo "docker-installed"
+            elif command -v docker >/dev/null 2>&1; then
+                echo "docker-installed"
+            else
+                echo "none"
+            fi
+            ;;
+        linux)
+            # On Linux, Rancher Desktop lives in /opt or is launched from the
+            # menu; we treat a present `rancher-desktop` binary as installed.
+            if command -v rancher-desktop >/dev/null 2>&1 || [ -x /opt/rancher-desktop/rancher-desktop ]; then
+                echo "rancher-installed"
+            elif command -v docker >/dev/null 2>&1; then
+                echo "docker-installed"
+            else
+                echo "none"
+            fi
+            ;;
+        windows)
+            if [ -d "/c/Program Files/Rancher Desktop" ] || [ -d "$HOME/AppData/Local/Programs/Rancher Desktop" ]; then
+                echo "rancher-installed"
+            elif [ -d "/c/Program Files/Docker" ] || command -v docker >/dev/null 2>&1; then
+                echo "docker-installed"
+            else
+                echo "none"
+            fi
+            ;;
+        *)
+            command -v docker >/dev/null 2>&1 && echo "docker-installed" || echo "none"
+            ;;
+    esac
+}
+
+# Ask Y/N with a default. $1 = prompt text, $2 = default (Y or N).
+# Honors DEVOPS_LABS_AUTO_INSTALL=1 (treats everything as Y).
+confirm() {
+    local message="$1" default="$2"
+    [ "${DEVOPS_LABS_AUTO_INSTALL:-0}" = "1" ] && return 0
+    if ! can_prompt; then
+        # Non-interactive: a default of Y means "go ahead".
+        [ "$default" = "Y" ] && return 0 || return 1
+    fi
+    local ans
+    prompt visible ans "    $message "
+    ans="${ans:-$default}"
+    case "$ans" in
+        y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Make sure homebrew is on PATH after installing it fresh.
+brew_path_fixup() {
+    for p in /opt/homebrew/bin /usr/local/bin; do
+        if [ -x "$p/brew" ] && ! command -v brew >/dev/null 2>&1; then
+            export PATH="$p:$PATH"
+        fi
+    done
+}
+
+ensure_homebrew_macos() {
+    command -v brew >/dev/null 2>&1 && return 0
+    say "Homebrew is required to install Rancher Desktop on macOS"
+    if ! confirm "Install Homebrew now (requires your password)? [Y/n]:" Y; then
+        fail "Homebrew is required. Install from https://brew.sh/, then re-run this script."
+    fi
+    # The homebrew installer is interactive and may ask for sudo. It handles
+    # /opt/homebrew (Apple Silicon) vs /usr/local (Intel) automatically.
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+        || fail "Homebrew install failed. Install it manually from https://brew.sh/ and re-run."
+    brew_path_fixup
+    command -v brew >/dev/null 2>&1 \
+        || fail "Homebrew installed but 'brew' isn't on PATH yet. Open a new shell and re-run."
+    ok "Homebrew installed."
+}
+
+install_rancher_desktop_macos() {
+    ensure_homebrew_macos
+    say "Installing Rancher Desktop via Homebrew (brew install --cask rancher)"
+    brew install --cask rancher \
+        || fail "brew install --cask rancher failed. Install manually from https://rancherdesktop.io/ then re-run."
+    ok "Rancher Desktop installed."
+}
+
+install_rancher_desktop_linux() {
+    say "Installing Rancher Desktop for Linux"
+    # Use the openSUSE Build Service repo that Rancher Desktop publishes to.
+    # See https://docs.rancherdesktop.io/getting-started/installation/.
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo mkdir -p /etc/apt/keyrings /etc/apt/sources.list.d
+        curl -fsSL https://download.opensuse.org/repositories/isv:/Rancher:/stable/deb/Release.key \
+            | gpg --dearmor 2>/dev/null \
+            | sudo tee /etc/apt/keyrings/isv-rancher-stable-archive-keyring.gpg >/dev/null
+        echo 'deb [signed-by=/etc/apt/keyrings/isv-rancher-stable-archive-keyring.gpg] https://download.opensuse.org/repositories/isv:/Rancher:/stable/deb/ ./' \
+            | sudo tee /etc/apt/sources.list.d/isv-rancher-stable.list >/dev/null
+        sudo apt-get update
+        sudo apt-get install -y rancher-desktop \
+            || fail "apt-get install rancher-desktop failed. Install from https://rancherdesktop.io/ and re-run."
+        ok "Rancher Desktop installed via apt."
+    elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+        local yum_cmd=dnf
+        command -v dnf >/dev/null 2>&1 || yum_cmd=yum
+        sudo tee /etc/yum.repos.d/isv_Rancher_stable.repo >/dev/null <<EOF
+[isv_Rancher_stable]
+name=Rancher Desktop (stable)
+baseurl=https://download.opensuse.org/repositories/isv:/Rancher:/stable/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://download.opensuse.org/repositories/isv:/Rancher:/stable/rpm/repodata/repomd.xml.key
+EOF
+        sudo "$yum_cmd" install -y rancher-desktop \
+            || fail "$yum_cmd install rancher-desktop failed. Install from https://rancherdesktop.io/ and re-run."
+        ok "Rancher Desktop installed via $yum_cmd."
+    else
+        fail "Could not find apt-get, dnf or yum on this Linux. Install Rancher Desktop manually from https://rancherdesktop.io/, then re-run."
+    fi
+    warn "Rancher Desktop was just installed. You'll need to open it from your applications menu, accept the first-launch wizard (dockerd engine, defaults are fine), and wait for the status to say 'Running' before re-running this installer."
+    exit 0
+}
+
+install_rancher_desktop_windows() {
+    say "Installing Rancher Desktop via winget"
+    if ! command -v winget.exe >/dev/null 2>&1 && ! command -v winget >/dev/null 2>&1; then
+        fail "winget isn't available here (needs recent Windows + App Installer). Install Rancher Desktop manually from https://rancherdesktop.io/ then re-run."
+    fi
+    winget install -e --id SUSE.RancherDesktop --accept-source-agreements --accept-package-agreements \
+        || fail "winget install SUSE.RancherDesktop failed. Install manually from https://rancherdesktop.io/ and re-run."
+    ok "Rancher Desktop installed."
+}
+
+install_docker_desktop_macos() {
+    ensure_homebrew_macos
+    say "Installing Docker Desktop via Homebrew (brew install --cask docker)"
+    brew install --cask docker \
+        || fail "brew install --cask docker failed. Install manually from https://www.docker.com/products/docker-desktop/ then re-run."
+    ok "Docker Desktop installed."
+}
+
+install_docker_desktop_windows() {
+    say "Installing Docker Desktop via winget"
+    winget install -e --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements \
+        || fail "winget install Docker.DockerDesktop failed. Install manually from https://www.docker.com/products/docker-desktop/ and re-run."
+    ok "Docker Desktop installed."
+}
+
+install_docker_desktop_linux() {
+    # Docker Desktop on Linux needs an installer per distro (.deb, .rpm, .arch).
+    # We keep this short: point the user at the official docs and exit so they
+    # can finish the manual install.
+    warn "Docker Desktop on Linux requires a distro-specific package. Install it from https://docs.docker.com/desktop/install/linux-install/ and re-run."
+    exit 0
+}
+
+# Pick a runtime and install it, honoring DEVOPS_LABS_RUNTIME or asking.
+choose_and_install_runtime() {
+    local os="$1"
+    local pick="${DEVOPS_LABS_RUNTIME:-}"
+    if [ -z "$pick" ]; then
+        echo
+        echo "    OpsBench needs a container runtime. Pick one:"
+        echo "      1) Rancher Desktop  (recommended: free, open source, same docker CLI)"
+        echo "      2) Docker Desktop   (closed source, free for small teams only)"
+        echo "      3) Skip  (you'll install one yourself and re-run)"
+        if can_prompt; then
+            local n
+            prompt visible n "    Choice [1]: "
+            case "${n:-1}" in
+                1|'') pick=rancher ;;
+                2)    pick=docker ;;
+                *)    pick=skip ;;
+            esac
+        else
+            pick=rancher
+            warn "No TTY; defaulting to Rancher Desktop. Set DEVOPS_LABS_RUNTIME=docker to pick Docker Desktop."
+        fi
+    fi
+    case "$pick" in
+        rancher)
+            case "$os" in
+                macos)   install_rancher_desktop_macos ;;
+                linux)   install_rancher_desktop_linux ;;
+                windows) install_rancher_desktop_windows ;;
+                *)       fail "Unsupported OS for auto-install. Install Rancher Desktop from https://rancherdesktop.io/ then re-run." ;;
+            esac
+            ;;
+        docker)
+            case "$os" in
+                macos)   install_docker_desktop_macos ;;
+                linux)   install_docker_desktop_linux ;;
+                windows) install_docker_desktop_windows ;;
+                *)       fail "Unsupported OS for auto-install. Install Docker Desktop manually then re-run." ;;
+            esac
+            ;;
+        skip)
+            fail "No container runtime available. Install Rancher Desktop (https://rancherdesktop.io/) or Docker Desktop and re-run."
+            ;;
+        *)
+            fail "DEVOPS_LABS_RUNTIME=$pick is not one of: rancher, docker, skip."
+            ;;
+    esac
+}
+
+ensure_container_runtime() {
+    local os="$1"
+    local state
+    state=$(detect_runtime)
+    case "$state" in
+        docker-running)
+            local v
+            v=$(docker version --format '{{.Client.Version}}' 2>/dev/null || echo "unknown")
+            ok "Container runtime: Docker ($v)"
+            ;;
+        rancher-running)
+            local v
+            v=$(docker version --format '{{.Client.Version}}' 2>/dev/null || echo "unknown")
+            ok "Container runtime: Rancher Desktop (docker $v)"
+            ;;
+        docker-installed)
+            warn "Docker is installed but the daemon isn't running."
+            wait_for_runtime_daemon "$os" docker \
+                || fail "Docker daemon didn't come up in time. Open Docker Desktop, wait for the whale to steady, and re-run."
+            ok "Docker daemon: running"
+            ;;
+        rancher-installed)
+            warn "Rancher Desktop is installed but the daemon isn't running."
+            wait_for_runtime_daemon "$os" rancher \
+                || fail "Rancher Desktop didn't come up in time. Open it, wait for 'Running', and re-run."
+            ok "Rancher Desktop daemon: running"
+            ;;
+        none)
+            warn "No container runtime detected on this machine."
+            choose_and_install_runtime "$os"
+            # After an install, launch and poll. Try Rancher first, fall back to
+            # Docker: whichever one we just installed will answer.
+            if wait_for_runtime_daemon "$os" rancher 2>/dev/null; then
+                ok "Rancher Desktop daemon: running"
+            elif wait_for_runtime_daemon "$os" docker 2>/dev/null; then
+                ok "Docker daemon: running"
+            else
+                fail "Runtime installed, but the daemon never came up. Open the runtime app, wait for 'Running', and re-run this installer."
+            fi
+            ;;
+        *)
+            fail "Unexpected runtime detection state: $state"
+            ;;
+    esac
 }
 
 check_prereqs() {
@@ -204,18 +535,12 @@ check_prereqs() {
     ok "OS: $os"
     [ "$os" = "unknown" ] && warn "Unknown OS. Carrying on, but ymmv."
 
-    # Docker
-    command -v docker >/dev/null || fail "Docker is not installed. Install Docker Desktop (Mac/Windows) or Docker Engine (Linux): https://docs.docker.com/get-docker/"
-    local docker_version
-    docker_version=$(docker version --format '{{.Client.Version}}' 2>/dev/null || echo "unknown")
-    ok "Docker CLI: $docker_version"
-    if ! docker info >/dev/null 2>&1; then
-        wait_for_docker_daemon "$os" || fail "Docker is installed but the daemon isn't up after 90s. Start Docker Desktop (or 'sudo systemctl start docker' on Linux) and re-run."
-    fi
-    ok "Docker daemon: running"
+    # Container runtime (detects Docker / Rancher Desktop; offers to install
+    # Rancher Desktop if nothing's there yet).
+    ensure_container_runtime "$os"
 
-    # Compose v2
-    docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required. Update Docker Desktop (it's bundled), or install the compose plugin on Linux: https://docs.docker.com/compose/install/"
+    # Compose v2 (shipped with both Docker Desktop and Rancher Desktop)
+    docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required. Update your runtime (Docker Desktop or Rancher Desktop both bundle it) or install the compose plugin on Linux: https://docs.docker.com/compose/install/"
     local compose_version
     compose_version=$(docker compose version --short)
     ok "Docker Compose: $compose_version"
