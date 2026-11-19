@@ -2,14 +2,20 @@
 # Equivalent to install.sh, same semantics, same output file layout.
 #
 # Walkthrough:
-#   1. Checks prerequisites: Docker, Docker Compose v2, port, disk, RAM.
-#   2. Asks for the GitHub pull token and logs into ghcr.io.
-#   3. Downloads compose.yaml and .env.example into %USERPROFILE%\devops-labs\.
-#   4. Asks for your license key and port, writes .env.
-#   5. Pulls images and starts the stack.
-#   6. Confirms /api/license shows kind=licensed and prints the URL.
+#   1. Detects the container runtime; if none is present, installs Rancher
+#      Desktop (preferred: free, open source) or Docker Desktop via winget.
+#   2. Checks prerequisites: Docker Compose v2, port, disk, RAM.
+#   3. Asks for the GitHub pull token and logs into ghcr.io.
+#   4. Downloads compose.yaml and .env.example into %USERPROFILE%\devops-labs\.
+#   5. Asks for your license key and port, writes .env.
+#   6. Pulls images and starts the stack.
+#   7. Confirms /api/license shows kind=licensed and prints the URL.
 #
 # Re-run any time. Existing .env values survive.
+#
+# Non-interactive install (CI, automation):
+#   $env:DEVOPS_LABS_RUNTIME=rancher|docker|skip  — pick without prompting.
+#   $env:DEVOPS_LABS_AUTO_INSTALL=1               — auto-"Y" on install prompts.
 
 $ErrorActionPreference = 'Stop'
 
@@ -80,21 +86,42 @@ function Get-TotalRamGb {
     [int]([math]::Floor($bytes / 1GB))
 }
 
-function Wait-ForDockerDaemon {
-    # Try to start Docker Desktop and poll `docker info` for up to 90s.
-    # Returns $true if the daemon comes up, $false otherwise.
-    $candidates = @(
-        "C:\Program Files\Docker\Docker\Docker Desktop.exe",
-        (Join-Path $env:LOCALAPPDATA "Docker\Docker Desktop.exe")
-    )
-    $dockerDesktop = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $dockerDesktop) {
-        Warn "Docker Desktop isn't installed. Install it from https://www.docker.com/products/docker-desktop/ and re-run."
-        return $false
+function Wait-ForRuntimeDaemon ($runtime) {
+    # $runtime = "rancher" or "docker". Launches the matching app if it's
+    # installed and polls `docker info` until the daemon answers or budget runs
+    # out (6 min for Rancher Desktop's VM first boot, 90s for Docker Desktop).
+    $budgetSec = 90
+    $exe = $null
+    switch ($runtime) {
+        "rancher" {
+            $budgetSec = 360
+            $candidates = @(
+                "C:\Program Files\Rancher Desktop\Rancher Desktop.exe",
+                (Join-Path $env:LOCALAPPDATA "Programs\Rancher Desktop\Rancher Desktop.exe")
+            )
+            $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $exe) {
+                Warn "Rancher Desktop isn't installed. Install from https://rancherdesktop.io/ and re-run."
+                return $false
+            }
+            Warn "Rancher Desktop isn't running. Launching (first boot can take 3-6 minutes)..."
+        }
+        default {
+            $candidates = @(
+                "C:\Program Files\Docker\Docker\Docker Desktop.exe",
+                (Join-Path $env:LOCALAPPDATA "Docker\Docker Desktop.exe")
+            )
+            $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $exe) {
+                Warn "Docker Desktop isn't installed. Install from https://www.docker.com/products/docker-desktop/ and re-run."
+                return $false
+            }
+            Warn "Docker daemon isn't running. Launching Docker Desktop (first start ~60s)..."
+        }
     }
-    Warn "Docker daemon isn't running. Launching Docker Desktop (first start can take ~60s)..."
-    Start-Process -FilePath $dockerDesktop -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
-    for ($i = 0; $i -lt 45; $i++) {
+    Start-Process -FilePath $exe -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+    $max = [int]($budgetSec / 2)
+    for ($i = 0; $i -lt $max; $i++) {
         docker info 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) { return $true }
         Start-Sleep -Seconds 2
@@ -102,21 +129,147 @@ function Wait-ForDockerDaemon {
     return $false
 }
 
+# Back-compat shim for older callers.
+function Wait-ForDockerDaemon { Wait-ForRuntimeDaemon -runtime "docker" }
+
+function Test-IsRancherActiveContext {
+    # Loose check: the docker context is rancher-desktop OR the app bundle is
+    # installed in one of the standard locations.
+    $ctx = docker context ls 2>$null | Select-String 'rancher-desktop.*\*'
+    if ($ctx) { return $true }
+    $rdDirs = @(
+        "C:\Program Files\Rancher Desktop",
+        (Join-Path $env:LOCALAPPDATA "Programs\Rancher Desktop")
+    )
+    foreach ($d in $rdDirs) { if (Test-Path $d) { return $true } }
+    return $false
+}
+
+function Get-RuntimeState {
+    # Returns: docker-running | rancher-running | docker-installed | rancher-installed | none
+    if (Test-Command 'docker') {
+        docker info 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            if (Test-IsRancherActiveContext) { return "rancher-running" }
+            return "docker-running"
+        }
+    }
+    # Daemon not up. Check which GUI is installed.
+    $rdDirs = @(
+        "C:\Program Files\Rancher Desktop",
+        (Join-Path $env:LOCALAPPDATA "Programs\Rancher Desktop")
+    )
+    foreach ($d in $rdDirs) { if (Test-Path $d) { return "rancher-installed" } }
+    $ddDirs = @(
+        "C:\Program Files\Docker\Docker",
+        (Join-Path $env:LOCALAPPDATA "Docker")
+    )
+    foreach ($d in $ddDirs) { if (Test-Path $d) { return "docker-installed" } }
+    if (Test-Command 'docker') { return "docker-installed" }
+    return "none"
+}
+
+function Confirm-YesNo ($prompt, $default) {
+    if ($env:DEVOPS_LABS_AUTO_INSTALL -eq '1') { return $true }
+    $ans = Read-Host $prompt
+    if (-not $ans) { $ans = $default }
+    return ($ans -match '^[Yy]')
+}
+
+function Install-WithWinget ($id, $name) {
+    if (-not (Test-Command 'winget')) {
+        Fail "winget is required but isn't on PATH. Install '$name' manually from the vendor website and re-run."
+    }
+    Say "Installing $name via winget"
+    & winget install -e --id $id --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -ne 0) {
+        Fail "winget install $id failed. Install '$name' manually and re-run."
+    }
+    Ok "$name installed."
+}
+
+function Install-RancherDesktop { Install-WithWinget "SUSE.RancherDesktop" "Rancher Desktop" }
+function Install-DockerDesktop  { Install-WithWinget "Docker.DockerDesktop" "Docker Desktop" }
+
+function Choose-And-Install-Runtime {
+    $pick = $env:DEVOPS_LABS_RUNTIME
+    if (-not $pick) {
+        Write-Host ""
+        Write-Host "    OpsBench needs a container runtime. Pick one:"
+        Write-Host "      1) Rancher Desktop  (recommended: free, open source, same docker CLI)"
+        Write-Host "      2) Docker Desktop   (closed source, free for small teams only)"
+        Write-Host "      3) Skip  (you'll install one yourself and re-run)"
+        $n = Read-Host "    Choice [1]"
+        if (-not $n) { $n = "1" }
+        switch ($n) {
+            "1" { $pick = "rancher" }
+            "2" { $pick = "docker" }
+            default { $pick = "skip" }
+        }
+    }
+    switch ($pick) {
+        "rancher" { Install-RancherDesktop }
+        "docker"  { Install-DockerDesktop }
+        "skip"    { Fail "No container runtime available. Install Rancher Desktop (https://rancherdesktop.io/) or Docker Desktop and re-run." }
+        default   { Fail "DEVOPS_LABS_RUNTIME='$pick' is not one of: rancher, docker, skip." }
+    }
+}
+
+function Ensure-ContainerRuntime {
+    $state = Get-RuntimeState
+    switch ($state) {
+        "docker-running" {
+            $v = (docker version --format '{{.Client.Version}}' 2>$null)
+            Ok "Container runtime: Docker ($v)"
+        }
+        "rancher-running" {
+            $v = (docker version --format '{{.Client.Version}}' 2>$null)
+            Ok "Container runtime: Rancher Desktop (docker $v)"
+        }
+        "docker-installed" {
+            Warn "Docker is installed but the daemon isn't running."
+            if (-not (Wait-ForRuntimeDaemon "docker")) {
+                Fail "Docker daemon didn't come up in time. Open Docker Desktop, wait for 'Engine running', and re-run."
+            }
+            Ok "Docker daemon: running"
+        }
+        "rancher-installed" {
+            Warn "Rancher Desktop is installed but the daemon isn't running."
+            if (-not (Wait-ForRuntimeDaemon "rancher")) {
+                Fail "Rancher Desktop didn't come up in time. Open it, wait for 'Running', and re-run."
+            }
+            Ok "Rancher Desktop daemon: running"
+        }
+        "none" {
+            Warn "No container runtime detected on this machine."
+            Choose-And-Install-Runtime
+            if (Wait-ForRuntimeDaemon "rancher") {
+                Ok "Rancher Desktop daemon: running"
+            } elseif (Wait-ForRuntimeDaemon "docker") {
+                Ok "Docker daemon: running"
+            } else {
+                Fail "Runtime installed, but the daemon never came up. Open the runtime app, wait for 'Running', and re-run this installer."
+            }
+        }
+        default { Fail "Unexpected runtime state: $state" }
+    }
+}
+
 function Check-Prereqs {
     Say "Checking prerequisites"
 
     Ok "OS: Windows ($([System.Environment]::OSVersion.VersionString))"
 
-    if (-not (Test-Command 'docker')) {
-        Fail "Docker is not installed. Install Docker Desktop: https://docs.docker.com/get-docker/"
-    }
-    $dockerVersion = (docker version --format '{{.Client.Version}}' 2>$null)
-    Ok "Docker CLI: $dockerVersion"
+    # Container runtime (detects Docker / Rancher Desktop; offers to install
+    # Rancher Desktop if nothing's there yet).
+    Ensure-ContainerRuntime
 
     docker info 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        if (-not (Wait-ForDockerDaemon)) {
-            Fail "Docker is installed but the daemon isn't up after 90s. Open Docker Desktop manually, wait for 'Engine running', and re-run."
+        # Shouldn't happen since Ensure-ContainerRuntime already confirmed, but
+        # keep the fallback so a weird edge case still prints something useful.
+        if (-not (Wait-ForRuntimeDaemon "docker")) {
+            Fail "Container runtime is installed but the daemon isn't up. Open it, wait for 'Running', and re-run."
         }
     }
     Ok "Docker daemon: running"
